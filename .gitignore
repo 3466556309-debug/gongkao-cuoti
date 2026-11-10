@@ -1,0 +1,9 @@
+# 本机运行时与测试临时文件
+.cert/
+.tmp-*
+__pycache__/
+*.pyc
+.DS_Store
+
+# harness session log
+dsh-v1.jsonl

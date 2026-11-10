@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="公考错题本">
+  <rect width="512" height="512" rx="112" fill="#153c38"/>
+  <circle cx="400" cy="110" r="120" fill="#1f5c52"/>
+  <circle cx="400" cy="110" r="86" fill="none" stroke="#f5efdf" stroke-opacity=".14" stroke-width="4"/>
+  <path d="M98 174 246 200v173L98 345Z" fill="#f5efdf"/>
+  <path d="M414 174 266 200v173l148-28Z" fill="#ebe2cd"/>
+  <path d="M98 345l148 28 148-28" fill="none" stroke="#c6b9a0" stroke-width="5"/>
+  <path d="M256 196v177" stroke="#1d5a52" stroke-width="9"/>
+  <path d="M136 243l84 14M136 276l84 14M292 257l84-14M292 290l84-14" stroke="#d0c3a8" stroke-width="4" stroke-linecap="round"/>
+  <path d="m180 285 55 55 109-125" fill="none" stroke="#b5462f" stroke-width="29" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="408" cy="372" r="13" fill="#c58a4a"/>
+</svg>
