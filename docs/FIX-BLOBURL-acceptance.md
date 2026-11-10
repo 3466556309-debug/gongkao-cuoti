@@ -120,6 +120,8 @@ try {
 - 数据库层注入测试：合法 `blob:` URL 被转成 Blob（内容 `hello`），dataURL 被转成 Blob；非法 `blob:` URL 返回中文提示“附件临时预览已失效，请重新选择图片后再保存”。
 - 页面无未捕获异常；仅“故意传入失效 blob URL”的测试产生一条预期的网络 404。
 
+推送后又在**线上 GitHub Pages**（`https://3466556309-debug.github.io/gongkao-cuoti/`）复测了一条带图保存：进入录入页上传 PNG 并保存成功，`files` 中 1 条记录为 `Blob`、无 `url` 字段，`caches.keys()` 返回 `["gkc-v1.0.1"]`，控制台 0 异常。线上 `sw.js` 与 `js/app.js` 已确认包含新缓存名和 `storableAttachmentBlob` 修复代码。
+
 ---
 
 ## 4. 是否已推送 GitHub Pages、新 SW 缓存名
