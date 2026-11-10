@@ -1,5 +1,5 @@
 import {
-  openDB, getAll, getOne, putOne, putMany
+  openDB, getAll, getOne, putOne, putMany, toStorableBlob
 } from './db.js';
 import {
   analyzeLocal, analyzeRemote, mergeKnowledgePoints, splitKnowledgePoints,
@@ -10,7 +10,7 @@ import {
  * 常量与状态
  * ------------------------------------------------------------------ */
 
-const APP_VERSION = '1.0.0';
+const APP_VERSION = '1.0.1';
 const REVIEW_INTERVALS = [1, 3, 7, 14, 30, 60];
 const MAX_FILE_SIZE = 30 * 1024 * 1024;
 
@@ -220,11 +220,50 @@ function mergeSettings(raw) {
   };
 }
 
+function isBlobValue(value) {
+  if (typeof Blob === 'undefined' || value == null) return false;
+  if (value instanceof Blob) return true;
+  const tag = Object.prototype.toString.call(value);
+  return tag === '[object Blob]' || tag === '[object File]';
+}
+
+function friendlySaveError(error) {
+  const message = String(error?.message || error || '');
+  if (/BlobURLs are not yet supported|Blob URL/i.test(message)) {
+    return '图片附件仍是临时预览地址，无法写入本机数据库；请重新选择图片后再保存。';
+  }
+  if (/QuotaExceeded|quota/i.test(message)) {
+    return '本机存储空间不足，请清理浏览器空间后重试。';
+  }
+  return message || '未知错误，请稍后重试。';
+}
+
+async function storableAttachmentBlob(source) {
+  try {
+    const blob = await toStorableBlob(source);
+    if (!isBlobValue(blob)) throw new Error('附件转换失败');
+    return blob;
+  } catch (error) {
+    throw new Error(friendlySaveError(error));
+  }
+}
+
+function fileRecordFrom(id, item, blob) {
+  return {
+    id,
+    blob,
+    name: item.name || (isBlobValue(blob) && blob.name) || '附件',
+    type: item.type || blob.type || 'application/octet-stream',
+    size: blob.size,
+    createdAt: nowISO()
+  };
+}
+
 async function getFileURL(id) {
   if (!id) return null;
   if (state.fileUrls.has(id)) return state.fileUrls.get(id);
   const record = await getOne('files', id);
-  if (!record?.blob) return null;
+  if (!isBlobValue(record?.blob)) return null;
   const url = URL.createObjectURL(record.blob);
   state.fileUrls.set(id, url);
   return url;
@@ -260,15 +299,17 @@ function attachmentThumb(attachments) {
 
 async function prepareBlob(file) {
   if (!file) return null;
-  if (file.size > MAX_FILE_SIZE) throw new Error(`文件超过 30MB：${file.name}`);
-  if (!file.type.startsWith('image/')) {
-    return { blob: file, name: file.name || '附件', type: file.type || 'application/octet-stream' };
+  const source = isBlobValue(file) ? file : await storableAttachmentBlob(file);
+  if (source.size > MAX_FILE_SIZE) throw new Error(`文件超过 30MB：${source.name || '附件'}`);
+  if (!String(source.type || '').startsWith('image/')) {
+    return { blob: source, name: source.name || '附件', type: source.type || 'application/octet-stream' };
   }
-  if (file.type === 'image/svg+xml' || file.type === 'image/gif' || file.size < 700 * 1024) {
-    return { blob: file, name: file.name || '图片', type: file.type };
+  if (source.type === 'image/svg+xml' || source.type === 'image/gif' || source.size < 700 * 1024) {
+    return { blob: source, name: source.name || '图片', type: source.type };
   }
+  let url = null;
   try {
-    const url = URL.createObjectURL(file);
+    url = URL.createObjectURL(source);
     const image = await new Promise((resolve, reject) => {
       const img = new Image();
       img.onload = () => resolve(img);
@@ -285,12 +326,15 @@ async function prepareBlob(file) {
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
     const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.84));
-    URL.revokeObjectURL(url);
-    if (!blob) return { blob: file, name: file.name, type: file.type };
-    const name = (file.name || '图片').replace(/\.[^.]+$/, '') + '.jpg';
+    if (!isBlobValue(blob)) {
+      return { blob: source, name: source.name || '图片', type: source.type };
+    }
+    const name = (source.name || '图片').replace(/\.[^.]+$/, '') + '.jpg';
     return { blob, name, type: 'image/jpeg' };
   } catch (e) {
-    return { blob: file, name: file.name || '图片', type: file.type };
+    return { blob: source, name: source.name || '图片', type: source.type };
+  } finally {
+    if (url) URL.revokeObjectURL(url);
   }
 }
 
@@ -795,16 +839,19 @@ async function addFiles(fileList) {
       try {
         const prepared = await prepareBlob(file);
         if (!prepared) continue;
+        const blob = isBlobValue(prepared.blob)
+          ? prepared.blob
+          : await storableAttachmentBlob(prepared.blob ?? prepared.url);
         pendingAttachments.push({
           key: uuid(),
-          blob: prepared.blob,
-          name: prepared.name,
-          type: prepared.type,
-          size: prepared.blob.size,
-          url: URL.createObjectURL(prepared.blob)
+          blob,
+          name: prepared.name || blob.name || '附件',
+          type: prepared.type || blob.type || 'application/octet-stream',
+          size: blob.size,
+          url: URL.createObjectURL(blob)
         });
       } catch (error) {
-        toast(error.message || '文件处理失败', 'error');
+        toast(friendlySaveError(error), 'error');
       }
     }
   } finally {
@@ -1020,9 +1067,16 @@ async function saveNewQuestion(analyze) {
     const attachments = [];
     const fileRecords = [];
     for (const item of pendingAttachments) {
+      // 只把真正的二进制写进 files；预览用的 blob: url 在这里被明确丢弃。
+      const blob = await storableAttachmentBlob(item.blob ?? item.url ?? item.dataUrl);
       const id = uuid();
-      attachments.push({ id, name: item.name, type: item.type, size: item.size });
-      fileRecords.push({ id, blob: item.blob, name: item.name, type: item.type, size: item.size, createdAt: nowISO() });
+      attachments.push({
+        id,
+        name: item.name || blob.name || '附件',
+        type: item.type || blob.type || 'application/octet-stream',
+        size: blob.size
+      });
+      fileRecords.push(fileRecordFrom(id, item, blob));
     }
     if (fileRecords.length) await putMany('files', fileRecords);
 
@@ -1067,7 +1121,7 @@ async function saveNewQuestion(analyze) {
       setTimeout(() => runAnalysis(id, 'remote', { silent: true }), 500);
     }
   } catch (error) {
-    toast(`保存失败：${error.message}`, 'error');
+    toast(`保存失败：${friendlySaveError(error)}`, 'error');
     submitButtons.forEach((b) => { b.disabled = false; });
   }
 }
@@ -1553,9 +1607,15 @@ function bindMaps() {
       if (file) {
         const prepared = await prepareBlob(file);
         if (prepared) {
+          const blob = await storableAttachmentBlob(prepared.blob ?? prepared.url);
           const id = uuid();
-          image = { id, name: prepared.name, type: prepared.type, size: prepared.blob.size };
-          await putOne('files', { id, blob: prepared.blob, name: prepared.name, type: prepared.type, size: prepared.blob.size, createdAt: nowISO() });
+          image = {
+            id,
+            name: prepared.name || blob.name || '附件',
+            type: prepared.type || blob.type || 'application/octet-stream',
+            size: blob.size
+          };
+          await putOne('files', fileRecordFrom(id, prepared, blob));
         }
       }
       const labels = autoNodes ? knowledgeStats().map((item) => item.kp).slice(0, 24) : [];
@@ -1572,7 +1632,7 @@ function bindMaps() {
       toast('导图复盘已创建', 'success');
       location.hash = `#/map/${map.id}`;
     } catch (error) {
-      toast(`创建失败：${error.message}`, 'error');
+      toast(`创建失败：${friendlySaveError(error)}`, 'error');
       submit.disabled = false;
     }
   });
@@ -1895,6 +1955,7 @@ function bindSettings() {
  * ------------------------------------------------------------------ */
 
 function blobToDataURL(blob) {
+  if (!isBlobValue(blob)) return Promise.reject(new Error('附件不是有效二进制'));
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(reader.result);
@@ -1909,7 +1970,7 @@ async function exportBackup() {
     const fileRecords = await getAll('files');
     const files = [];
     for (const record of fileRecords) {
-      if (!record.blob) continue;
+      if (!isBlobValue(record.blob)) continue;
       files.push({
         id: record.id,
         name: record.name,
@@ -1961,7 +2022,7 @@ async function importBackup(file) {
       for (const record of data.files) {
         if (!record?.id || !record.dataUrl) continue;
         try {
-          const blob = await (await fetch(record.dataUrl)).blob();
+          const blob = await toStorableBlob(record.dataUrl);
           await putOne('files', {
             id: record.id,
             blob,
